@@ -752,7 +752,7 @@ elif active_tab == "transactions":
                 category = (i.get("category") or "misc").strip()
                 amount = (int(i.get("amount_cents") or 0) / 100.0)
 
-                c1, c2, c3, c4 = st.columns([1.2, 2.2, 1.0, 1.2])
+                c1, c2, c3, c4 = st.columns([1.2, 2.3, 0.9, 0.9])
                 with c1:
                     st.caption(d)
                 with c2:
@@ -761,8 +761,21 @@ elif active_tab == "transactions":
                 with c3:
                     st.write(f"{amount:,.2f}")
                 with c4:
-                    edit_clicked = st.button("Edit", key=f"edit_{expense_id}")
-                    delete_clicked = st.button("Delete", key=f"delete_{expense_id}")
+                    a1, a2 = st.columns([1, 1], gap="small")
+                    with a1:
+                        edit_clicked = st.button(
+                            "✏️",
+                            key=f"edit_{expense_id}",
+                            help="Edit",
+                            use_container_width=True,
+                        )
+                    with a2:
+                        delete_clicked = st.button(
+                            "🗑️",
+                            key=f"delete_{expense_id}",
+                            help="Delete",
+                            use_container_width=True,
+                        )
 
                 if edit_clicked:
                     st.session_state["_editing_expense_id"] = expense_id
