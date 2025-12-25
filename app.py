@@ -152,6 +152,53 @@ def save_settings(
         )
 
 
+def get_expense(expense_id: int) -> dict | None:
+    engine = _engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT id, occurred_at, note, category, amount_cents
+                FROM expenses
+                WHERE id = :id;
+                """
+            ),
+            {"id": int(expense_id)},
+        ).mappings().first()
+        return dict(row) if row else None
+
+
+def update_expense(*, expense_id: int, item_name: str, amount: float, category: str, occurred_on: dt.date) -> None:
+    engine = _engine()
+    occurred_at = dt.datetime.combine(occurred_on, dt.time(0, 0, 0)).isoformat()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE expenses
+                   SET amount_cents = :amount_cents,
+                       category = :category,
+                       note = :note,
+                       occurred_at = :occurred_at
+                 WHERE id = :id;
+                """
+            ),
+            {
+                "id": int(expense_id),
+                "amount_cents": int(amount * 100),
+                "category": category,
+                "note": item_name.strip(),
+                "occurred_at": occurred_at,
+            },
+        )
+
+
+def delete_expense(expense_id: int) -> None:
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM expenses WHERE id = :id;"), {"id": int(expense_id)})
+
+
 def _recalc_misc_budget() -> None:
     max_budget = float(st.session_state.get("_max_budget", 0.0) or 0.0)
     total_without_misc = (
@@ -174,6 +221,19 @@ def _recalc_budget_from_goal() -> None:
 
 
 CATEGORIES = ["Fun", "groceris", "travel", "home exp", "misc"]
+
+CATEGORY_LABELS = {
+    "Fun": "Fun",
+    "groceris": "Groceries",
+    "travel": "Travel",
+    "home exp": "Home",
+    "misc": "Misc",
+}
+
+
+def _category_label(cat: str) -> str:
+    c = (cat or "").strip()
+    return CATEGORY_LABELS.get(c, c or "Misc")
 
 
 TABS = [
@@ -515,7 +575,7 @@ def list_transactions(search: str = "", limit: int = 500):
             rows = conn.execute(
                 text(
                     """
-                    SELECT id, occurred_at, note, category, amount_cents, currency
+                    SELECT id, occurred_at, note, category, amount_cents
                     FROM expenses
                     WHERE LOWER(COALESCE(note, '')) LIKE :q
                        OR LOWER(COALESCE(category, '')) LIKE :q
@@ -529,7 +589,7 @@ def list_transactions(search: str = "", limit: int = 500):
             rows = conn.execute(
                 text(
                     """
-                    SELECT id, occurred_at, note, category, amount_cents, currency
+                    SELECT id, occurred_at, note, category, amount_cents
                     FROM expenses
                     ORDER BY occurred_at DESC, id DESC
                     LIMIT :limit;
@@ -637,12 +697,12 @@ if active_tab == "dashboard":
 
         h1, h2 = st.columns([3, 1])
         with h1:
-            st.markdown(f"**{cat}**")
+            st.markdown(f"**{_category_label(cat)}**")
         with h2:
             st.markdown(f"**{used:,.0f}/{allocated:,.0f}**")
         st.progress(ratio)
 elif active_tab == "add":
-    st.title("Add quick expence")
+    st.title("Add quick expense")
     st.caption("Add a purchase in a few seconds.")
 
     with st.form("add_expense", clear_on_submit=True):
@@ -654,7 +714,7 @@ elif active_tab == "add":
         with c1:
             amount = st.number_input("Amount", min_value=0.0, step=1.0, format="%.2f")
         with c2:
-            category = st.radio("Category", CATEGORIES, horizontal=True)
+            category = st.radio("Category", CATEGORIES, horizontal=True, format_func=_category_label)
 
         saved = st.form_submit_button("Save")
 
@@ -686,20 +746,101 @@ elif active_tab == "transactions":
             st.caption(f"Subtotal: {(subtotal_cents / 100.0):,.2f}")
 
             for i in items:
+                expense_id = int(i.get("id") or 0)
                 d = i["_occurred"].date().isoformat()
                 note = (i.get("note") or "").strip() or "(no item)"
                 category = (i.get("category") or "misc").strip()
                 amount = (int(i.get("amount_cents") or 0) / 100.0)
-                currency = i.get("currency") or "USD"
 
-                c1, c2, c3 = st.columns([1.2, 2.4, 1.2])
+                c1, c2, c3, c4 = st.columns([1.2, 2.2, 1.0, 1.2])
                 with c1:
                     st.caption(d)
                 with c2:
                     st.write(f"**{note}**")
-                    st.caption(category)
+                    st.caption(_category_label(category))
                 with c3:
-                    st.write(f"{amount:,.2f} {currency}")
+                    st.write(f"{amount:,.2f}")
+                with c4:
+                    edit_clicked = st.button("Edit", key=f"edit_{expense_id}")
+                    delete_clicked = st.button("Delete", key=f"delete_{expense_id}")
+
+                if edit_clicked:
+                    st.session_state["_editing_expense_id"] = expense_id
+
+                if delete_clicked:
+                    st.session_state["_deleting_expense_id"] = expense_id
+
+                if st.session_state.get("_deleting_expense_id") == expense_id:
+                    dc1, dc2, _ = st.columns([1, 1, 3])
+                    with dc1:
+                        if st.button("Confirm delete", key=f"confirm_delete_{expense_id}"):
+                            delete_expense(expense_id)
+                            st.session_state.pop("_deleting_expense_id", None)
+                            st.session_state.pop("_editing_expense_id", None)
+                            st.rerun()
+                    with dc2:
+                        if st.button("Cancel", key=f"cancel_delete_{expense_id}"):
+                            st.session_state.pop("_deleting_expense_id", None)
+
+                if st.session_state.get("_editing_expense_id") == expense_id:
+                    existing = get_expense(expense_id)
+                    if existing:
+                        with st.form(f"edit_form_{expense_id}"):
+                            st.caption("Edit transaction")
+                            occurred_dt = _parse_occurred_at(existing.get("occurred_at") or "")
+                            edit_date = st.date_input(
+                                "Date",
+                                value=occurred_dt.date(),
+                                key=f"edit_date_{expense_id}",
+                            )
+                            edit_item = st.text_input(
+                                "Item",
+                                value=(existing.get("note") or "").strip(),
+                                key=f"edit_item_{expense_id}",
+                            )
+                            edit_amount = st.number_input(
+                                "Amount",
+                                min_value=0.0,
+                                step=1.0,
+                                format="%.2f",
+                                value=(int(existing.get("amount_cents") or 0) / 100.0),
+                                key=f"edit_amount_{expense_id}",
+                            )
+                            edit_category = st.selectbox(
+                                "Category",
+                                options=CATEGORIES,
+                                index=CATEGORIES.index((existing.get("category") or "misc").strip())
+                                if (existing.get("category") or "misc").strip() in CATEGORIES
+                                else CATEGORIES.index("misc"),
+                                format_func=_category_label,
+                                key=f"edit_category_{expense_id}",
+                            )
+
+                            ec1, ec2 = st.columns([1, 1])
+                            with ec1:
+                                submitted = st.form_submit_button("Save")
+                            with ec2:
+                                cancel = st.form_submit_button("Cancel")
+
+                        if cancel:
+                            st.session_state.pop("_editing_expense_id", None)
+                            st.rerun()
+
+                        if submitted:
+                            if not (edit_item or "").strip():
+                                st.error("Please enter an item name.")
+                            elif float(edit_amount) <= 0:
+                                st.error("Please enter an amount greater than 0.")
+                            else:
+                                update_expense(
+                                    expense_id=expense_id,
+                                    item_name=str(edit_item),
+                                    amount=float(edit_amount),
+                                    category=str(edit_category),
+                                    occurred_on=edit_date,
+                                )
+                                st.session_state.pop("_editing_expense_id", None)
+                                st.rerun()
 elif active_tab == "analytics":
     st.title("Analytics")
 
@@ -766,7 +907,7 @@ elif active_tab == "analytics":
             for cat in CATEGORIES:
                 fig_area.add_trace(
                     go.Scatter(
-                        name=cat,
+                        name=_category_label(cat),
                         x=months_fmt,
                         y=[by_cat[cat][m] for m in months],
                         mode="lines",
@@ -774,7 +915,7 @@ elif active_tab == "analytics":
                         stackgroup="one",
                         groupnorm="",
                         fill="tonexty" if not first else "tozeroy",
-                        hovertemplate=f"{cat} %{x}: %{{y:.2f}}<extra></extra>",
+                        hovertemplate=f"{_category_label(cat)} %{x}: %{{y:.2f}}<extra></extra>",
                     )
                 )
                 first = False
@@ -898,7 +1039,7 @@ elif active_tab == "settings":
     b1, b2 = st.columns([1, 1])
     with b1:
         st.slider(
-            "Fun",
+            _category_label("Fun"),
             min_value=0.0,
             max_value=slider_max_budget,
             step=10.0,
@@ -907,7 +1048,7 @@ elif active_tab == "settings":
             disabled=budgets_disabled,
         )
         st.slider(
-            "travel",
+            _category_label("travel"),
             min_value=0.0,
             max_value=slider_max_budget,
             step=10.0,
@@ -917,7 +1058,7 @@ elif active_tab == "settings":
         )
     with b2:
         st.slider(
-            "groceris",
+            _category_label("groceris"),
             min_value=0.0,
             max_value=slider_max_budget,
             step=10.0,
@@ -926,7 +1067,7 @@ elif active_tab == "settings":
             disabled=budgets_disabled,
         )
         st.slider(
-            "home exp",
+            _category_label("home exp"),
             min_value=0.0,
             max_value=slider_max_budget,
             step=10.0,
@@ -947,7 +1088,7 @@ elif active_tab == "settings":
         _recalc_misc_budget()
 
     st.slider(
-        "misc",
+        _category_label("misc"),
         min_value=0.0,
         max_value=slider_max_budget,
         step=10.0,
@@ -982,15 +1123,14 @@ elif active_tab == "settings":
     export_rows = list_transactions(search="", limit=100000)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["date", "item", "category", "price", "currency"])
+    writer.writerow(["date", "item", "category", "price"])
     for r in export_rows:
         occurred = _parse_occurred_at(r.get("occurred_at") or "")
         d = occurred.date().isoformat()
         note = (r.get("note") or "").strip()
         category = (r.get("category") or "").strip()
         amount = (int(r.get("amount_cents") or 0) / 100.0)
-        currency = r.get("currency") or "USD"
-        writer.writerow([d, note, category, f"{amount:.2f}", currency])
+        writer.writerow([d, note, category, f"{amount:.2f}"])
 
     st.download_button(
         "Export CSV",
