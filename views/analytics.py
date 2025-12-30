@@ -2,7 +2,8 @@
 import datetime as dt
 import streamlit as st
 import plotly.graph_objects as go
-from models.analytics import monthly_totals, monthly_category_totals, get_kpi_metrics
+from models.analytics import monthly_totals, monthly_category_totals, get_kpi_metrics, monthly_savings_rate
+from models.settings import get_settings
 from models.tag_analytics import tag_spending_over_time, top_tags_by_spending
 from models.tags import list_all_tags
 from utils.constants import CATEGORIES
@@ -55,6 +56,95 @@ def render_analytics():
     end_date = None
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
+    
+    # Savings Rate Trend Chart (at the top)
+    settings = get_settings()
+    target_savings_pct = float(settings.get("saving_goal_pct", 0.0) or 0.0)
+    savings_data = monthly_savings_rate(limit=12)
+    
+    if savings_data and target_savings_pct > 0:
+        st.markdown("### 💰 Savings Rate Trend")
+        
+        x = [format_ym(r["ym"]) for r in savings_data]
+        y_actual = [r["savings_rate"] for r in savings_data]
+        y_target = [target_savings_pct] * len(x)
+        
+        fig_savings = go.Figure()
+        
+        # Target line
+        fig_savings.add_trace(
+            go.Scatter(
+                x=x,
+                y=y_target,
+                mode="lines",
+                name="Target",
+                line=dict(color="#94a3b8", width=2, dash="dash"),
+                hovertemplate="<b>Target</b><br>%{y:.1f}%<extra></extra>",
+            )
+        )
+        
+        # Actual savings rate
+        fig_savings.add_trace(
+            go.Scatter(
+                x=x,
+                y=y_actual,
+                mode="lines+markers",
+                name="Actual",
+                line=dict(color="#10b981", width=3),
+                marker=dict(size=8, symbol="circle"),
+                fill="tonexty",
+                fillcolor="rgba(16,185,129,0.1)",
+                hovertemplate="<b>%{x}</b><br>Savings: %{y:.1f}%<extra></extra>",
+            )
+        )
+        
+        fig_savings.update_layout(
+            template="plotly_dark",
+            margin=dict(l=20, r=20, t=20, b=20),
+            height=260,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(
+                type="category",
+                tickangle=0,
+                tickfont=dict(size=11),
+                showgrid=False
+            ),
+            yaxis=dict(
+                title="Savings %",
+                gridcolor="rgba(255,255,255,0.08)",
+                ticksuffix="%",
+                tickfont=dict(size=11)
+            ),
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=10)
+            ),
+        )
+        
+        st.plotly_chart(fig_savings, use_container_width=True, config={"displayModeBar": False})
+        
+        # Show current month stats
+        if savings_data:
+            latest = savings_data[-1]
+            current_rate = latest["savings_rate"]
+            diff = current_rate - target_savings_pct
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Current Month", f"{current_rate:.1f}%", f"{diff:+.1f}%")
+            with col2:
+                avg_rate = sum(r["savings_rate"] for r in savings_data) / len(savings_data)
+                st.metric("12-Month Avg", f"{avg_rate:.1f}%")
+            with col3:
+                st.metric("Target", f"{target_savings_pct:.1f}%")
+        
+        st.markdown("---")
     
     # Get KPI metrics
     kpis = get_kpi_metrics(start_date=start_date, end_date=end_date, search=search_query)

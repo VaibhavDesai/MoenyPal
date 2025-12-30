@@ -155,3 +155,54 @@ def get_kpi_metrics(start_date: dt.date | None = None, end_date: dt.date | None 
             "first_date": None,
             "last_date": None,
         }
+
+
+def monthly_savings_rate(limit: int = 12):
+    """Get monthly savings rate (%) based on income and spending."""
+    engine = get_engine()
+    
+    with engine.begin() as conn:
+        # Get settings for income calculation
+        settings_row = conn.execute(
+            text("SELECT income_1_cents, income_2_cents FROM settings WHERE id = 1;")
+        ).mappings().first()
+        
+        if not settings_row:
+            return []
+        
+        income_1_cents = int(settings_row.get("income_1_cents", 0) or 0)
+        income_2_cents = int(settings_row.get("income_2_cents", 0) or 0)
+        total_income_cents = income_1_cents + income_2_cents
+        
+        if total_income_cents <= 0:
+            return []
+        
+        # Get monthly spending
+        rows = conn.execute(
+            text(
+                """
+                SELECT substr(occurred_at, 1, 7) AS ym,
+                       COALESCE(SUM(amount_cents), 0) AS spent_cents
+                FROM expenses
+                GROUP BY ym
+                ORDER BY ym DESC
+                LIMIT :limit;
+                """
+            ),
+            {"limit": limit},
+        ).mappings()
+        
+        results = []
+        for row in rows:
+            spent_cents = int(row.get("spent_cents", 0) or 0)
+            savings_cents = total_income_cents - spent_cents
+            savings_rate = (savings_cents / total_income_cents * 100.0) if total_income_cents > 0 else 0.0
+            
+            results.append({
+                "ym": row["ym"],
+                "savings_rate": savings_rate,
+                "spent_cents": spent_cents,
+                "income_cents": total_income_cents
+            })
+        
+        return list(reversed(results))
